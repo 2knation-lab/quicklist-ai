@@ -28,6 +28,8 @@ function services(
     quota?: boolean;
     quotaUnavailable?: boolean;
     providerUnavailable?: boolean;
+    providerFailure?: { status: number; code: string };
+    timeout?: boolean;
     proposal?: unknown;
   } = {},
 ) {
@@ -50,7 +52,18 @@ function services(
             { status: 404 },
           )
         : Response.json(options.quota ?? true);
-    if (url === "https://api.openai.com/v1/chat/completions")
+    if (url === "https://api.openai.com/v1/chat/completions") {
+      if (options.timeout) throw new DOMException("Timed out", "TimeoutError");
+      if (options.providerFailure)
+        return Response.json(
+          {
+            error: {
+              code: options.providerFailure.code,
+              message: `Private provider message: ${env.OPENAI_API_KEY} ${photo}`,
+            },
+          },
+          { status: options.providerFailure.status },
+        );
       return options.providerUnavailable
         ? Response.json({ error: "Unavailable" }, { status: 500 })
         : Response.json({
@@ -62,6 +75,7 @@ function services(
               },
             ],
           });
+    }
     throw new Error(`Unexpected network request: ${url}`);
   };
   return { calls, handler: createAnalyzeHandler(env, transport), transport };
@@ -142,17 +156,47 @@ test("missing quota migration fails closed", async () => {
 
 test("provider and invalid proposal errors never fall back to demo mode", async () => {
   for (const options of [
-    { providerUnavailable: true },
-    { proposal: { title: "Incomplete" } },
+    { providerUnavailable: true, expected: "Analysis could not complete" },
+    {
+      proposal: { title: "Incomplete" },
+      expected: "complete, valid listing draft",
+    },
   ]) {
     const { handler } = services(options);
     const response = await handler(request());
     expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({
-      error:
-        "Analysis could not complete. Try again or write the draft manually.",
-    });
+    const result = await response.json();
+    expect(result.error).toContain(options.expected);
+    expect(result.mode).toBeUndefined();
   }
+});
+
+test("provider errors give actionable messages without leaking keys or photos", async () => {
+  for (const [status, code, expected] of [
+    [429, "insufficient_quota", "billing or credits"],
+    [429, "billing_hard_limit_reached", "billing or credits"],
+    [401, "invalid_api_key", "server API key"],
+    [403, "insufficient_permissions", "server API key"],
+    [404, "model_not_found", "model is unavailable"],
+    [429, "rate_limit_exceeded", "rate limiting"],
+    [400, "invalid_image", "could not accept this photo"],
+  ] as const) {
+    const { handler } = services({ providerFailure: { status, code } });
+    const response = await handler(request());
+    expect(response.status).toBe(status === 400 ? 502 : 503);
+    const result = await response.text();
+    expect(result).toContain(expected);
+    expect(result).not.toContain(env.OPENAI_API_KEY);
+    expect(result).not.toContain(photo);
+    expect(result).not.toContain("Private provider message");
+  }
+});
+
+test("analysis timeout suggests fewer photos", async () => {
+  const { handler } = services({ timeout: true });
+  const response = await handler(request());
+  expect(response.status).toBe(504);
+  expect((await response.json()).error).toContain("fewer photos");
 });
 
 test("credential-free demo does not make external requests", async () => {

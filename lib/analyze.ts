@@ -132,13 +132,94 @@ export function createAnalyzeHandler(
           }),
         },
       );
-      if (!response.ok) throw new Error("provider");
+      if (!response.ok) {
+        // Never return or log the provider's raw message: it can contain parts
+        // of a rejected credential or other request data.
+        const failure = await response.json().catch(() => null);
+        const code = failure?.error?.code;
+        const quota =
+          code === "insufficient_quota" ||
+          code === "billing_hard_limit_reached";
+        const rejectedKey = response.status === 401 || response.status === 403;
+        const model = code === "model_not_found";
+        console.warn("AI provider rejected analysis", {
+          status: response.status,
+          reason: quota
+            ? "billing"
+            : rejectedKey
+              ? "credentials"
+              : model
+                ? "model"
+                : "provider",
+        });
+        if (quota)
+          return Response.json(
+            {
+              error:
+                "OpenAI billing or credits are unavailable. The site owner needs to check the OpenAI project's billing and usage limits.",
+            },
+            { status: 503 },
+          );
+        if (rejectedKey)
+          return Response.json(
+            {
+              error:
+                "OpenAI rejected the server API key or its permissions. The site owner needs to check the key configured in Vercel and redeploy.",
+            },
+            { status: 503 },
+          );
+        if (model)
+          return Response.json(
+            {
+              error:
+                "The configured AI model is unavailable to this OpenAI project. The site owner needs to check model access.",
+            },
+            { status: 503 },
+          );
+        if (response.status === 429)
+          return Response.json(
+            {
+              error:
+                "OpenAI is temporarily rate limiting requests. Wait a moment before trying again.",
+            },
+            { status: 503 },
+          );
+        if (response.status === 400)
+          return Response.json(
+            {
+              error:
+                "OpenAI could not accept this photo request. Try a different JPEG, PNG, or WebP photo; if it persists, the site owner should check the AI configuration.",
+            },
+            { status: 502 },
+          );
+        throw new Error("provider");
+      }
       const result = await response.json();
-      const proposal = proposalSchema.parse(
-        JSON.parse(result.choices[0].message.content),
-      );
+      let proposal;
+      try {
+        proposal = proposalSchema.parse(
+          JSON.parse(result.choices[0].message.content),
+        );
+      } catch {
+        console.warn("AI analysis returned an invalid proposal");
+        return Response.json(
+          {
+            error:
+              "The AI response did not contain a complete, valid listing draft. Try again or enter the details manually.",
+          },
+          { status: 502 },
+        );
+      }
       return Response.json({ mode: "ai", proposal });
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        ["TimeoutError", "AbortError"].includes(error.name)
+      )
+        return Response.json(
+          { error: "Photo analysis timed out. Try again with fewer photos." },
+          { status: 504 },
+        );
       return Response.json(
         {
           error:

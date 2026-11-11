@@ -35,6 +35,7 @@ Open http://localhost:3000. With no environment values, the application runs in 
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL. Optional for browser-only demo. |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Public project key protected by RLS; configure together with URL. |
 | `OPENAI_API_KEY` | Server-only key. Enables real photo proposals; never prefix with NEXT_PUBLIC. |
+| `QUICKLIST_OPENAI_API_KEY` | Alternative server-only binding for cloud environments that reserve `OPENAI_API_KEY`. Takes precedence when set. For a proxy-backed HTTP secret, allow only `api.openai.com`. |
 | `OPENAI_MODEL` | Optional vision-capable model, defaults to `gpt-4.1-mini`. |
 
 Live AI requires both Supabase configuration and a signed-in user. AI errors remain errors, and never silently produce a demo identification. Unknown identification, condition and compatibility must be verified by the seller. No market data or price recommendation is fabricated.
@@ -45,6 +46,19 @@ Live AI requires both Supabase configuration and a signed-in user. AI errors rem
 2. Enable email authentication. Set Auth Site URL to your deployed origin and add local/deployed origins to permitted redirect URLs. Configure production email delivery for reliable magic links.
 3. Set the two public environment variables above. Sign in using an emailed link. Signed-in saves upload photos privately under `<user-id>/<draft-id>/<random-id>.jpg`; draft JSON contains private paths. Reads use authenticated downloads rather than public URLs.
 4. Verify access with two test accounts: account A saves a draft and photos, account B must not be able to read or update A's rows or download A's photos. Anonymous clients must have no access. These live checks require your project and have not been run in the credential-free demo environment.
+
+### Enable live photo analysis
+
+After the private Supabase setup above:
+
+1. Run `supabase/ai-usage.sql` in the Supabase SQL editor. This migration is safe to rerun and preserves existing usage. It limits each signed-in account to 20 analysis attempts per UTC day across all app instances. Failed provider requests count toward this limit; invalid photo requests do not. The counter table cannot be read or modified directly by browser clients.
+2. Configure `OPENAI_API_KEY` securely on the server and set an OpenAI project budget/usage alert. Never paste this key into chat, commit it, or use a `NEXT_PUBLIC_` variable for it. Set the two public Supabase variables together and restart the app; rebuild after changing public variables for production.
+3. Sign in, upload a real part photo, and choose **Generate listing draft**. Confirm that an AI proposal appears, uncertain details remain marked for verification, and no demo template is substituted on errors.
+4. Save the draft, reload, and reopen it to verify the private photo and listing details. Complete the two-account isolation checks above before using real seller data.
+
+Live AI refuses to run when its usage migration is missing or unavailable. At the daily limit it returns HTTP 429; manual editing and saving remain available. This account limit does not replace provider budgets, signup abuse controls, or a global spending limit. The SQL migration and live credential checks must be completed on your own project; local mocked tests do not establish hosted integration readiness.
+
+For access testing, try account B's token against account A's draft ID through the Supabase Data API and against A's photo path through the authenticated Storage API. Require no readable row/photo and no successful modification; repeat without a token. Verify A can still retrieve the original data. Use disposable test accounts and drafts, and keep tokens out of logs.
 
 Browser drafts are not automatically migrated to cloud storage. Open one before sign-in and explicitly save it to your account if needed. Cloud writes create new photo objects; superseded uploads can remain in storage. Add retention/cleanup before larger-scale use. Photos are compressed in-browser (up to 1200 px, 4 photos, combined encoded payload under 3.5 MB); HEIC is not accepted, so use JPEG/compatible capture on iPhone.
 
@@ -62,7 +76,7 @@ npx playwright install chromium
 npm test
 ```
 
-The browser test covers the iPhone-width demo photo-to-draft workflow, auction defaults, Best Offer eligibility, positive package measurements, seller confirmation, saved draft/photo recovery, and horizontal overflow. Server credentials are not needed for demo tests. Real AI and hosted Supabase require separate integration checks with configured credentials.
+The browser test covers the iPhone-width demo photo-to-draft workflow, auction defaults, Best Offer eligibility, positive package measurements, seller confirmation, saved draft/photo recovery, and horizontal overflow. `tests/analyze.spec.ts` separately exercises the authenticated analysis handler with mocked Supabase/OpenAI transport, including quota enforcement, missing configuration, invalid inputs, and provider failures. No real credentials or paid calls are used by those tests. Real AI and hosted Supabase require separate integration checks with configured credentials.
 
 ## Current boundaries
 
